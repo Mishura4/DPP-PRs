@@ -39,11 +39,15 @@ endif()
 
 add_compile_definitions(DPP_OS=${CMAKE_SYSTEM_NAME})
 
-if(${AVX_TYPE} STREQUAL "OFF")
-	include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/DetectArchitecture.cmake")
-else()
-	message("-- AVX type overridden by configuration: ${AVX_TYPE}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/DetectArchitecture.cmake")
+
+if(HAVE_PRCTL)
+	add_compile_definitions(HAVE_PRCTL)
 endif()
+if(HAVE_PTHREAD_SETNAME_NP)
+	add_compile_definitions(HAVE_PTHREAD_SETNAME_NP)
+endif()
+
 STRING(REPLACE "AVX" "" AVX_TYPE ${AVX_TYPE})
 add_compile_definitions(AVX_TYPE=${AVX_TYPE})
 add_compile_options(${AVX_FLAG})
@@ -246,6 +250,41 @@ if (HAVE_VOICE)
 	include_directories("${CMAKE_CURRENT_SOURCE_DIR}/../mlspp/lib/hpke/include")
 endif()
 
+add_library(dpp-interface INTERFACE IMPORTED)
+
+target_include_directories(dpp-interface INTERFACE 
+	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+	$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include/dpp>
+)
+
+if (WIN32 AND NOT MINGW AND NOT CONAN_EXPORTED)
+	if (NOT WINDOWS_32_BIT)
+		target_link_libraries(dpp-interface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/libssl.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/libcrypto.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/opus.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/zlib.lib")
+	else()
+		target_link_libraries(dpp-interface INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/libssl.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/libcrypto.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/opus.lib"
+			"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/zlib.lib")
+	endif()
+else()
+	if (CONAN_EXPORTED)
+		target_link_libraries(dpp-interface INTERFACE openssl::openssl ZLIB::ZLIB Opus::opus)
+	else()
+		target_link_libraries(dpp-interface INTERFACE ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} ${ZLIB_LIBRARIES})
+	endif()
+	if (MINGW)
+		target_link_libraries(dpp-interface INTERFACE wsock32 ws2_32 crypt32)
+	endif ()
+endif()
+
+if (HAVE_VOICE)
+	target_link_libraries(dpp-interface INTERFACE ${OPUS_LIBRARIES})
+	include_directories(${OPUS_INCLUDE_DIRS})
+endif()
+
 foreach (fullmodname ${subdirlist})
     get_filename_component(modname ${fullmodname} NAME)
     set (modsrc "")
@@ -261,15 +300,14 @@ foreach (fullmodname ${subdirlist})
 	else()
 		add_library(${modname} STATIC ${modsrc})
 	endif()
+
+	target_link_libraries(${modname} PUBLIC dpp-interface)
+
 	set_target_properties(${modname} 
 		PROPERTIES
 		VERSION ${CMAKE_PROJECT_VERSION}
 		SOVERSION ${CMAKE_PROJECT_VERSION}
 		POSITION_INDEPENDENT_CODE true
-	)
-	target_include_directories(${modname} PUBLIC 
-		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
-		$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include/dpp>
 	)
 
 	if (DPP_USE_PCH)
@@ -279,36 +317,6 @@ foreach (fullmodname ${subdirlist})
 			"${CMAKE_CURRENT_SOURCE_DIR}/../include/dpp/utility.h"
 			"${CMAKE_CURRENT_SOURCE_DIR}/../include/dpp/restresults.h"
 		)
-	endif()
-
-	if (WIN32 AND NOT MINGW AND NOT CONAN_EXPORTED)
-
-		if (NOT WINDOWS_32_BIT)
-			target_link_libraries(${modname} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/libssl.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/libcrypto.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/opus.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/lib/zlib.lib")
-		else()
-			target_link_libraries(${modname} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/libssl.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/libcrypto.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/opus.lib"
-				"${CMAKE_CURRENT_SOURCE_DIR}/../win32/32/lib/zlib.lib")
-		endif()
-
-	else()
-		if (CONAN_EXPORTED)
-			target_link_libraries(${modname} PUBLIC openssl::openssl ZLIB::ZLIB Opus::opus)
-		else()
-			target_link_libraries(${modname} PUBLIC ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY} ${ZLIB_LIBRARIES})
-		endif()
-		if (MINGW)
-			target_link_libraries(${modname} PUBLIC wsock32 ws2_32 crypt32)
-		endif ()
-	endif()
-
-	if (HAVE_VOICE)
-		target_link_libraries(${modname} PUBLIC ${OPUS_LIBRARIES})
-		include_directories(${OPUS_INCLUDE_DIRS})
 	endif()
 endforeach()
 
@@ -361,72 +369,22 @@ target_compile_features(dpp PRIVATE cxx_thread_local)
 target_compile_features(dpp PRIVATE cxx_variadic_templates)
 target_compile_features(dpp PRIVATE cxx_attribute_deprecated)
 
-if(HAVE_PRCTL)
-	target_compile_definitions(dpp PRIVATE HAVE_PRCTL)
-endif()
-if(HAVE_PTHREAD_SETNAME_NP)
-	target_compile_definitions(dpp PRIVATE HAVE_PTHREAD_SETNAME_NP)
-endif()
+if(NOT DPP_NO_MODULE)
+	message("-- ${Green}Building DPP as a C++20 module${ColourReset}")
+
+	set(DPP_MODULE_NAME dpp-module)
+	add_library(${DPP_MODULE_NAME} STATIC)
+	target_sources(${DPP_MODULE_NAME} PUBLIC FILE_SET CXX_MODULES BASE_DIRS "${CMAKE_CURRENT_LIST_DIR}/../include" FILES "${CMAKE_CURRENT_LIST_DIR}/../include/dpp/dpp.ixx")
+	target_compile_definitions(${DPP_MODULE_NAME} PUBLIC DPP_MODULE)
+	target_link_libraries(${DPP_MODULE_NAME} PUBLIC dpp-interface)
+	target_link_libraries(dpp PUBLIC ${DPP_MODULE_NAME})
+	target_compile_features(${DPP_MODULE_NAME} PUBLIC cxx_std_20)
+endif ()
 
 if(NOT DPP_NO_CORO)
 	message("-- Attempting to enable coroutines feature")
 	set(CMAKE_CXX_STANDARD 20)
 	target_compile_features(dpp PUBLIC cxx_std_20)
-	if(WIN32 AND NOT MINGW AND NOT DPP_CLANG_CL)
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /await:strict") # https://learn.microsoft.com/en-us/cpp/build/reference/await-enable-coroutine-support?view=msvc-170
-		if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-			if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS_EQUAL 19.29.30158) # Taken from 2019 actions, as they seemingly fail to compile.
-				message("${BoldRed}Coroutines with MSVC (Visual Studio) require VS 2022 (Compiler Ver: 19.29.30158) or above. Forcing coroutines off.${ColourReset}")
-				set(DPP_NO_CORO ON)
-			endif()
-		endif()
-	else()
-		if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-			if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14.0.0) # clang >= 14 has native support
-				message("-- ${Yellow}Clang < 14 - attempting to detect if using libc++ or stdc++${ColourReset}")
-				check_cxx_source_compiles("
-					#include <iostream>
-
-					int a =
-					#ifdef __GLIBCXX__
-						1;
-					#else
-						fgsfds;
-					#endif
-
-					int main(int argc, char* argv[])
-					{
-						return 0;
-					}
-					" IS_GLIBCXX)
-				if(IS_GLIBCXX)
-					if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 12.0.0)
-						message("${BoldRed}Clang with stdc++ and coroutines requires version 12.0.0 or above. Forcing coroutines off.${ColourReset}")
-						set(DPP_NO_CORO ON)
-					else()
-						message("-- ${Yellow}Detected stdc++ - enabling mock std::experimental namespace${ColourReset}")
-						target_compile_definitions(dpp PUBLIC "STDCORO_GLIBCXX_COMPAT" "DPP_CORO")
-					endif()
-				else()
-					message("-- ${Yellow}Detected libc++ - using <experimental/coroutine>${ColourReset}")
-					if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0.0)
-						set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines-ts")
-					endif()
-					target_compile_definitions(dpp PUBLIC "STDCORO_GLIBCXX_COMPAT" "DPP_CORO")
-				endif()
-				message("-- ${Yellow}Note - coroutines in clang < 14 are experimental, upgrading is recommended${ColourReset}")
-			endif()
-		elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-			if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 10.0)
-				message("${BoldRed}Coroutines with g++ require version 10 or above. Forcing coroutines off.${ColourReset}")
-				set(DPP_NO_CORO ON)
-			elseif(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 11.0)
-				message("-- ${Yellow}Note - coroutines in g++10 are experimental, upgrading to g++11 or above is recommended${ColourReset}")
-				set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fcoroutines")
-				target_compile_definitions(dpp PUBLIC "STDCORO_GLIBCXX_COMPAT" "DPP_CORO")
-			endif()
-		endif()
-	endif()
 endif()
 
 if(DPP_NO_CORO)
@@ -434,6 +392,9 @@ if(DPP_NO_CORO)
 	target_compile_definitions(dpp PUBLIC DPP_NO_CORO)
 else()
 	message("-- ${Green}Coroutines are enabled!${ColourReset}")
+	if (MSVC AND NOT MINGW AND NOT CLANG_CL)
+		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /await:strict") # https://learn.microsoft.com/en-us/cpp/build/reference/await-enable-coroutine-support?view=msvc-170
+	endif ()
 endif()
 
 if(DPP_FORMATTERS)

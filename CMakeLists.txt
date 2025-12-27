@@ -33,6 +33,7 @@ option(DPP_USE_EXTERNAL_JSON "Use an external installation of nlohmann::json" OF
 option(DPP_USE_PCH "Use precompiled headers to speed up compilation" OFF)
 option(AVX_TYPE "Force AVX type for speeding up audio mixing" OFF)
 option(DPP_TEST_VCPKG "Force VCPKG build without VCPKG installed (for development use only!)" OFF)
+option(DPP_NO_MODULE "Do not build DPP as a C++20 module" OFF)
 
 include(CheckCXXSymbolExists)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
